@@ -1,14 +1,79 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { saveEpisode, loadEpisodes, deleteEpisode } from "./db";
 
 const DEFAULT_FEEDS = [
-  { id: 1, name: "Personalwirtschaft", url: "https://www.personalwirtschaft.de/feed/", active: true, category: "HR" },
-  { id: 2, name: "HRM.de", url: "https://www.hrm.de/feed/", active: true, category: "HR" },
-  { id: 3, name: "Human Resources Manager", url: "https://www.humanresourcesmanager.de/feed/", active: true, category: "HR" },
-  { id: 4, name: "Persoblogger", url: "https://www.persoblogger.de/feed/", active: true, category: "HR" },
-  { id: 5, name: "REXX Systems HR-Blog", url: "https://www.rexx-systems.com/feed/", active: true, category: "HR" },
+  // Recht & Rechtsprechung
+  { id: 1, name: "Bundesarbeitsgericht (BAG)", url: "https://www.bundesarbeitsgericht.de/feed/", active: true, category: "Recht" },
+  { id: 2, name: "Expertenforum Arbeitsrecht (EFAR)", url: "https://efarbeitsrecht.net/feed/", active: true, category: "Recht" },
+  { id: 3, name: "FAZ Recht & Steuern", url: "https://www.faz.net/rss/aktuell/wirtschaft/recht-steuern/", active: true, category: "Recht" },
+  { id: 4, name: "JUVE", url: "https://www.juve.de/feed/", active: true, category: "Recht" },
+  // HR & Personal
+  { id: 5, name: "Personalwirtschaft", url: "https://www.personalwirtschaft.de/feed/", active: true, category: "HR" },
+  { id: 6, name: "HRM.de", url: "https://www.hrm.de/feed/", active: true, category: "HR" },
+  { id: 7, name: "Human Resources Manager", url: "https://www.humanresourcesmanager.de/feed/", active: true, category: "HR" },
+  { id: 8, name: "Persoblogger", url: "https://www.persoblogger.de/feed/", active: true, category: "HR" },
 ];
 
-const STEPS = ["quellen", "artikel", "script", "audio"];
+// Pronunciation fixes for German TTS
+function preprocessForTTS(text) {
+  return text
+    .replace(/\bHR\b/g, "Ha-Er")
+    .replace(/\bKPIs?\b/g, (m) => m.endsWith("s") ? "Ka-Pe-Ies" : "Ka-Pe-I")
+    .replace(/\bROI\b/g, "Er-O-I")
+    .replace(/\bCEO\b/g, "Ce-E-O")
+    .replace(/\bCFO\b/g, "Ce-Ef-O")
+    .replace(/\bCHRO\b/g, "Ce-Ha-Er-O")
+    .replace(/\bOKRs?\b/g, (m) => m.endsWith("s") ? "O-Ka-Ers" : "O-Ka-Er")
+    .replace(/\bKI\b/g, "Ka-I")
+    .replace(/\bBGH\b/g, "Be-Ge-Ha")
+    .replace(/\bBAG\b/g, "Be-A-Ge")
+    .replace(/\bBVerfG\b/g, "Bundesverfassungsgericht")
+    .replace(/\bAGG\b/g, "A-Ge-Ge")
+    .replace(/\bDSGVO\b/g, "De-Es-Ge-Fau-O");
+}
+
+// WAV encoder from AudioBuffer
+function audioBufferToWav(buffer) {
+  const numChannels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const format = 1; // PCM
+  const bitDepth = 16;
+  const bytesPerSample = bitDepth / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const dataLength = buffer.length * blockAlign;
+  const headerLength = 44;
+  const totalLength = headerLength + dataLength;
+  const arrayBuffer = new ArrayBuffer(totalLength);
+  const view = new DataView(arrayBuffer);
+
+  const writeString = (offset, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, totalLength - 8, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, format, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitDepth, true);
+  writeString(36, "data");
+  view.setUint32(40, dataLength, true);
+
+  let offset = 44;
+  for (let i = 0; i < buffer.length; i++) {
+    for (let ch = 0; ch < numChannels; ch++) {
+      const sample = Math.max(-1, Math.min(1, buffer.getChannelData(ch)[i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+      offset += 2;
+    }
+  }
+  return new Blob([arrayBuffer], { type: "audio/wav" });
+}
 
 export default function App() {
   const [tab, setTab] = useState("quellen");
@@ -22,14 +87,15 @@ export default function App() {
   const [audioSegments, setAudioSegments] = useState([]);
   const [episodes, setEpisodes] = useState([]);
   const [claudeApiKey, setClaudeApiKey] = useState(() => localStorage.getItem("rp_claudeApiKey") || "");
-  const [elApiKey, setElApiKey] = useState(() => localStorage.getItem("rp_elApiKey") || "");
-  const [annaVoiceId, setAnnaVoiceId] = useState(() => localStorage.getItem("rp_annaVoiceId") || "21m00Tcm4TlvDq8ikWAM");
-  const [peterVoiceId, setPeterVoiceId] = useState(() => localStorage.getItem("rp_peterVoiceId") || "AZnzlk1XvdvUeBnXmlld");
+  const [gcpApiKey, setGcpApiKey] = useState(() => localStorage.getItem("rp_gcpApiKey") || "");
+  const [annaVoice, setAnnaVoice] = useState(() => localStorage.getItem("rp_annaVoice") || "de-DE-Chirp3-HD-Aoede");
+  const [peterVoice, setPeterVoice] = useState(() => localStorage.getItem("rp_peterVoice") || "de-DE-Chirp3-HD-Charon");
 
   useEffect(() => { localStorage.setItem("rp_claudeApiKey", claudeApiKey); }, [claudeApiKey]);
-  useEffect(() => { localStorage.setItem("rp_elApiKey", elApiKey); }, [elApiKey]);
-  useEffect(() => { localStorage.setItem("rp_annaVoiceId", annaVoiceId); }, [annaVoiceId]);
-  useEffect(() => { localStorage.setItem("rp_peterVoiceId", peterVoiceId); }, [peterVoiceId]);
+  useEffect(() => { localStorage.setItem("rp_gcpApiKey", gcpApiKey); }, [gcpApiKey]);
+  useEffect(() => { localStorage.setItem("rp_annaVoice", annaVoice); }, [annaVoice]);
+  useEffect(() => { localStorage.setItem("rp_peterVoice", peterVoice); }, [peterVoice]);
+
   const [status, setStatus] = useState({ msg: "", type: "idle" });
   const [audioProgress, setAudioProgress] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -39,9 +105,20 @@ export default function App() {
   const [newFeedUrl, setNewFeedUrl] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [scriptPreviewOpen, setScriptPreviewOpen] = useState(false);
-  const audioRef = useRef(null);
+  const [downloadMenuEpId, setDownloadMenuEpId] = useState(null);
+
+  // Two audio elements for crossfade
+  const audioARef = useRef(null);
+  const audioBRef = useRef(null);
+  const activeAudioRef = useRef("A"); // which one is currently playing
+  const crossfadeTimerRef = useRef(null);
 
   const setMsg = (msg, type = "info") => setStatus({ msg, type });
+
+  // Load saved episodes on mount
+  useEffect(() => {
+    loadEpisodes().then(eps => setEpisodes(eps.slice(0, 5))).catch(e => console.warn("DB load error:", e));
+  }, []);
 
   // — RSS Fetching —
   const fetchFeeds = async () => {
@@ -74,21 +151,21 @@ export default function App() {
     else setMsg("Keine Artikel gefunden. Feeds prüfen.", "error");
   };
 
-  // — Script Generation —
+  // — Script Generation (30 min target) —
   const generateScript = async () => {
     const sel = articles.filter(a => selectedIds.includes(a.id));
     if (!sel.length) { setMsg("Keine Artikel ausgewählt.", "error"); return; }
     if (!claudeApiKey) { setMsg("Claude API-Key fehlt (⚙ Einstellungen).", "error"); return; }
     setGeneratingScript(true);
-    setMsg("Script wird generiert…", "loading");
+    setMsg("Script wird generiert (ca. 30 Min. Episode)…", "loading");
     const articleText = sel.map(a => `[${a.feedName} | ${a.category}]\nTitel: ${a.title}\n${a.desc}`).join("\n\n—\n\n");
 
     const prompt = `Du bist Produzent eines deutschen Arbeitsrecht & HR-Podcasts namens "Recht & Personal".
 
-Erstelle ein natürliches, professionelles Podcast-Gespräch zwischen:
+Erstelle ein LANGES, natürliches Podcast-Gespräch (Ziel: ca. 30 Minuten Sprechzeit, also ca. 4500–5000 Wörter) zwischen:
 
-- Anna Becker: Fachanwältin für Arbeitsrecht, präzise und praxisnah
-- Peter Hoffmann: Senior HR-Manager, fragt nach Auswirkungen für Unternehmen
+- Anna Becker: Fachanwältin für Arbeitsrecht. Spricht präzise, praxisnah, erklärt juristische Details verständlich. Nutzt gelegentlich Fachbegriffe, die sie dann direkt erklärt.
+- Peter Hoffmann: Senior HR-Manager mit 15 Jahren Erfahrung. Pragmatisch, fragt nach konkreten Auswirkungen für Unternehmen, bringt Praxisbeispiele ein, reagiert emotional auf überraschende Urteile.
 
 Basierend auf diesen aktuellen Artikeln/Urteilen:
 ${articleText}
@@ -96,13 +173,27 @@ ${articleText}
 WICHTIG: Antworte NUR mit einem JSON-Array ohne Markdown-Backticks oder Erklärungen. Format:
 [{"speaker":"Anna","text":"…"},{"speaker":"Peter","text":"…"},…]
 
-Anforderungen:
+STIL-ANFORDERUNGEN für einen authentischen Podcast:
+- Natürliche Gesprächsdynamik: Unterbrechungen, kurze Reaktionen ("Ja, genau.", "Oh, das ist interessant.", "Moment, da muss ich kurz einhaken…", "Absolut.", "Das sehe ich anders.")
+- Füllwörter und Denkpausen natürlich einbauen: "Also…", "Naja…", "Hmm, guter Punkt.", "Weißt du was…"
+- Kurze Zwischenreaktionen als eigene Turns: z.B. {"speaker":"Peter","text":"Mhm, ja."} oder {"speaker":"Anna","text":"Genau, und das ist der entscheidende Punkt."}
+- Gelegentlich persönliche Anekdoten oder Beispiele aus der Praxis: "Ich hatte letztens einen Fall…", "Bei uns im Unternehmen…"
+- Humor und Leichtigkeit einstreuen, wo es passt
+- Spannungsbogen: Themen aufbauen, überraschende Wendungen, "Das hätte ich nicht erwartet"
+- KEINE steife Moderation – es soll klingen wie zwei Experten, die sich gut kennen
 
-- Auf Deutsch, professionell aber zugänglich
-- Begrüßung am Anfang, Zusammenfassung am Ende
-- Praxisrelevanz für HR hervorheben
-- Mindestens 25 Wechsel zwischen den Sprechern
-- Jedes Thema einführen und praktische Konsequenzen besprechen`;
+STRUKTUR:
+- Lockere, persönliche Begrüßung (nicht formell)
+- Jedes Thema: Einführung → Hintergrund → juristische Analyse (Anna) → praktische Auswirkungen (Peter) → Diskussion → Fazit
+- Zwischendurch: kurze Übergänge, Rückbezüge auf vorherige Themen
+- Ausführliche Zusammenfassung und persönlicher Ausblick am Ende
+- Verabschiedung mit Hinweis auf nächste Episode
+
+UMFANG:
+- Mindestens 70 Sprecherwechsel
+- Einzelne Turns dürfen 3-5 Sätze lang sein (nicht nur Einzeiler!)
+- Mische lange inhaltliche Turns mit kurzen Reaktionen
+- Jedes Thema ausführlich besprechen (nicht nur anreißen)`;
 
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -115,16 +206,19 @@ Anforderungen:
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
-          max_tokens: 8000,
+          max_tokens: 16000,
           messages: [{ role: "user", content: prompt }]
         })
       });
       const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
       const text = data.content?.find(c => c.type === "text")?.text || "";
       const clean = text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
       setScript(parsed);
-      setMsg(`Script: ${parsed.length} Gesprächsrunden generiert.`, "success");
+      const wordCount = parsed.reduce((sum, t) => sum + t.text.split(/\s+/).length, 0);
+      const estMinutes = Math.round(wordCount / 140);
+      setMsg(`Script: ${parsed.length} Turns, ~${wordCount} Wörter, ~${estMinutes} Min. geschätzt.`, "success");
       setTab("script");
     } catch (e) {
       setMsg("Fehler: " + e.message, "error");
@@ -132,24 +226,36 @@ Anforderungen:
     setGeneratingScript(false);
   };
 
-  // — Audio Generation —
+  // — Audio Generation (Google Cloud TTS) —
   const generateAudio = async () => {
-    if (!elApiKey) { setMsg("ElevenLabs API-Key fehlt (⚙ Einstellungen).", "error"); return; }
+    if (!gcpApiKey) { setMsg("Google Cloud API-Key fehlt (⚙ Einstellungen).", "error"); return; }
     if (!script.length) { setMsg("Kein Script vorhanden.", "error"); return; }
     setGeneratingAudio(true);
     const segs = [];
     for (let i = 0; i < script.length; i++) {
       const turn = script[i];
+      const processedText = preprocessForTTS(turn.text);
       setMsg(`Audio: ${i + 1}/${script.length} (${turn.speaker})…`, "loading");
-      const voiceId = turn.speaker === "Anna" ? annaVoiceId : peterVoiceId;
+      const voiceName = turn.speaker === "Anna" ? annaVoice : peterVoice;
       try {
-        const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+        const r = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${gcpApiKey}`, {
           method: "POST",
-          headers: { "xi-api-key": elApiKey, "Content-Type": "application/json" },
-          body: JSON.stringify({ text: turn.text, model_id: "eleven_multilingual_v2", voice_settings: { stability: 0.5, similarity_boost: 0.75 } })
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            input: { text: processedText },
+            voice: { languageCode: "de-DE", name: voiceName },
+            audioConfig: { audioEncoding: "MP3", speakingRate: 1.0, pitch: 0 },
+          })
         });
-        if (!r.ok) throw new Error(`ElevenLabs: ${r.status}`);
-        const blob = await r.blob();
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.error?.message || `Google TTS: ${r.status}`);
+        }
+        const data = await r.json();
+        const audioBytes = atob(data.audioContent);
+        const audioArray = new Uint8Array(audioBytes.length);
+        for (let j = 0; j < audioBytes.length; j++) audioArray[j] = audioBytes.charCodeAt(j);
+        const blob = new Blob([audioArray], { type: "audio/mpeg" });
         segs.push({ ...turn, url: URL.createObjectURL(blob) });
       } catch (e) {
         setMsg("Audio-Fehler bei Segment " + (i + 1) + ": " + e.message, "error");
@@ -166,48 +272,198 @@ Anforderungen:
       script,
       articleCount: selectedIds.length,
     };
-    setEpisodes(prev => [ep, ...prev]);
+    setEpisodes(prev => {
+      const updated = [ep, ...prev];
+      // Keep only last 5 episodes — delete oldest from DB
+      if (updated.length > 5) {
+        const toRemove = updated.slice(5);
+        toRemove.forEach(old => deleteEpisode(old.id).catch(() => {}));
+      }
+      return updated.slice(0, 5);
+    });
     setActiveEpisode(ep);
     setGeneratingAudio(false);
-    setMsg("Episode fertig! Viel Spaß beim Hören.", "success");
+    setMsg("Episode wird gespeichert…", "loading");
+    try {
+      await saveEpisode(ep);
+      setMsg("Episode fertig und gespeichert!", "success");
+    } catch (e) {
+      setMsg("Episode fertig, aber Speicherfehler: " + e.message, "error");
+    }
     setTab("audio");
   };
 
-  // — Player —
+  // — Download Episode —
+  const handleDownload = async (ep, format) => {
+    setDownloadMenuEpId(null);
+    const safeName = ep.title.replace(/[^a-zA-Z0-9äöüÄÖÜß\- ]/g, "");
+
+    if (format === "mp3") {
+      // ElevenLabs already returns MP3 — just concatenate the blobs
+      setMsg("MP3 wird zusammengeführt…", "loading");
+      try {
+        const parts = [];
+        for (const seg of ep.segments) {
+          const resp = await fetch(seg.url);
+          parts.push(await resp.blob());
+        }
+        const merged = new Blob(parts, { type: "audio/mpeg" });
+        const url = URL.createObjectURL(merged);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${safeName}.mp3`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setMsg("MP3-Download gestartet!", "success");
+      } catch (e) {
+        setMsg("Download-Fehler: " + e.message, "error");
+      }
+    } else {
+      // WAV: decode all segments, merge, encode
+      setMsg("WAV wird zusammengeführt (kann etwas dauern)…", "loading");
+      try {
+        const audioCtx = new AudioContext();
+        const buffers = [];
+        for (const seg of ep.segments) {
+          const resp = await fetch(seg.url);
+          const arrayBuf = await resp.arrayBuffer();
+          const decoded = await audioCtx.decodeAudioData(arrayBuf);
+          buffers.push(decoded);
+        }
+        const totalLength = buffers.reduce((sum, b) => sum + b.length, 0);
+        const sampleRate = buffers[0].sampleRate;
+        const channels = buffers[0].numberOfChannels;
+        const merged = audioCtx.createBuffer(channels, totalLength, sampleRate);
+        let offset = 0;
+        for (const buf of buffers) {
+          for (let ch = 0; ch < channels; ch++) {
+            merged.getChannelData(ch).set(buf.getChannelData(ch), offset);
+          }
+          offset += buf.length;
+        }
+        const wavBlob = audioBufferToWav(merged);
+        const url = URL.createObjectURL(wavBlob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${safeName}.wav`;
+        a.click();
+        URL.revokeObjectURL(url);
+        audioCtx.close();
+        setMsg("WAV-Download gestartet!", "success");
+      } catch (e) {
+        setMsg("Download-Fehler: " + e.message, "error");
+      }
+    }
+  };
+
+  // — Delete Episode —
+  const handleDeleteEpisode = async (epId) => {
+    try {
+      await deleteEpisode(epId);
+      setEpisodes(prev => prev.filter(e => e.id !== epId));
+      if (activeEpisode?.id === epId) {
+        setActiveEpisode(null);
+        setIsPlaying(false);
+      }
+      setMsg("Episode gelöscht.", "success");
+    } catch (e) {
+      setMsg("Löschfehler: " + e.message, "error");
+    }
+  };
+
+  // — Crossfade Player —
+  const getActiveAudio = () => activeAudioRef.current === "A" ? audioARef.current : audioBRef.current;
+  const getNextAudio = () => activeAudioRef.current === "A" ? audioBRef.current : audioARef.current;
+
   const playFrom = useCallback((ep, idx = 0) => {
     setActiveEpisode(ep);
     setCurrentSeg(idx);
-    if (audioRef.current && ep.segments[idx]) {
-      audioRef.current.src = ep.segments[idx].url;
-      audioRef.current.play();
+    clearTimeout(crossfadeTimerRef.current);
+    const audio = getActiveAudio();
+    const other = getNextAudio();
+    if (other) { other.pause(); other.volume = 0; }
+    if (audio && ep.segments[idx]) {
+      audio.volume = 1;
+      audio.src = ep.segments[idx].url;
+      audio.play();
       setIsPlaying(true);
     }
   }, []);
 
   const togglePlay = () => {
-    if (!audioRef.current) return;
-    if (isPlaying) { audioRef.current.pause(); setIsPlaying(false); }
-    else { audioRef.current.play(); setIsPlaying(true); }
+    const audio = getActiveAudio();
+    if (!audio) return;
+    if (isPlaying) { audio.pause(); setIsPlaying(false); }
+    else { audio.play(); setIsPlaying(true); }
   };
 
+  // Crossfade: start next segment 250ms before current ends
   useEffect(() => {
-    const el = audioRef.current;
-    if (!el) return;
-    const onEnded = () => {
+    const audio = getActiveAudio();
+    if (!audio) return;
+
+    const onTimeUpdate = () => {
+      if (!audio.duration) return;
+      setAudioProgress((audio.currentTime / audio.duration) * 100);
+
+      // Start crossfade 250ms before end
       if (activeEpisode && currentSeg < activeEpisode.segments.length - 1) {
-        const next = currentSeg + 1;
-        setCurrentSeg(next);
-        el.src = activeEpisode.segments[next].url;
-        el.play();
-      } else setIsPlaying(false);
+        const remaining = audio.duration - audio.currentTime;
+        if (remaining <= 0.25 && remaining > 0 && !crossfadeTimerRef.current) {
+          crossfadeTimerRef.current = true; // flag to prevent double-trigger
+          const next = getNextAudio();
+          const nextIdx = currentSeg + 1;
+          if (next && activeEpisode.segments[nextIdx]) {
+            next.src = activeEpisode.segments[nextIdx].url;
+            next.volume = 0;
+            next.play().then(() => {
+              // Quick crossfade
+              let vol = 0;
+              const fade = setInterval(() => {
+                vol += 0.1;
+                if (vol >= 1) {
+                  clearInterval(fade);
+                  audio.pause();
+                  next.volume = 1;
+                  activeAudioRef.current = activeAudioRef.current === "A" ? "B" : "A";
+                  setCurrentSeg(nextIdx);
+                  crossfadeTimerRef.current = null;
+                } else {
+                  next.volume = Math.min(vol, 1);
+                  audio.volume = Math.max(1 - vol, 0);
+                }
+              }, 25);
+            }).catch(() => {});
+          }
+        }
+      }
     };
-    const onTime = () => {
-      if (el.duration) setAudioProgress((el.currentTime / el.duration) * 100);
+
+    const onEnded = () => {
+      if (crossfadeTimerRef.current) return; // crossfade already handled it
+      if (activeEpisode && currentSeg < activeEpisode.segments.length - 1) {
+        const nextIdx = currentSeg + 1;
+        setCurrentSeg(nextIdx);
+        audio.src = activeEpisode.segments[nextIdx].url;
+        audio.volume = 1;
+        audio.play();
+      } else {
+        setIsPlaying(false);
+      }
     };
-    el.addEventListener("ended", onEnded);
-    el.addEventListener("timeupdate", onTime);
-    return () => { el.removeEventListener("ended", onEnded); el.removeEventListener("timeupdate", onTime); };
+
+    audio.addEventListener("timeupdate", onTimeUpdate);
+    audio.addEventListener("ended", onEnded);
+    return () => {
+      audio.removeEventListener("timeupdate", onTimeUpdate);
+      audio.removeEventListener("ended", onEnded);
+    };
   }, [activeEpisode, currentSeg]);
+
+  // Reset crossfade flag on segment change
+  useEffect(() => {
+    crossfadeTimerRef.current = null;
+  }, [currentSeg]);
 
   const addFeed = () => {
     if (!newFeedUrl.trim()) return;
@@ -224,7 +480,7 @@ Anforderungen:
     if (step === "quellen") return articles.length > 0;
     if (step === "artikel") return selectedIds.length > 0 && articles.length > 0;
     if (step === "script") return script.length > 0;
-    if (step === "audio") return audioSegments.length > 0;
+    if (step === "audio") return audioSegments.length > 0 || episodes.length > 0;
     return false;
   };
 
@@ -235,7 +491,8 @@ Anforderungen:
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,600;0,700;1,300&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500&display=swap'); *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } body { background: #0d1117; } ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: #161b22; } ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; } @keyframes spin { to { transform: rotate(360deg); } } @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} } @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} } @keyframes barPulse { 0%,100%{height:6px} 50%{height:20px} } .wave span { display:inline-block; width:3px; background:#e8a135; border-radius:2px; margin:0 1px; animation: barPulse 0.8s ease-in-out infinite; } .wave span:nth-child(2){animation-delay:0.15s} .wave span:nth-child(3){animation-delay:0.3s} .wave span:nth-child(4){animation-delay:0.15s} .wave span:nth-child(5){animation-delay:0s} .fadeIn { animation: fadeIn 0.3s ease forwards; } input, textarea { outline: none; } button { cursor: pointer; border: none; background: none; } .tag-recht { background: #1a2744; color: #6fa3ef; border: 1px solid #1e3a6e; } .tag-hr { background: #1a2e24; color: #5fb878; border: 1px solid #1e4a2e; } .tag-sonstige { background: #2a2020; color: #c47a5a; border: 1px solid #4a2a1a; }`}</style>
 
       <div style={{ fontFamily: "'Inter', sans-serif", background: "#0d1117", minHeight: "100vh", color: "#e6edf3" }}>
-        <audio ref={audioRef} style={{ display: "none" }} />
+        <audio ref={audioARef} style={{ display: "none" }} />
+        <audio ref={audioBRef} style={{ display: "none" }} />
 
         {/* Header */}
         <header style={{ background: "#161b22", borderBottom: "1px solid #21262d", padding: "0 24px" }}>
@@ -302,20 +559,20 @@ Anforderungen:
                   <div style={{ fontSize: 11, color: "#6e7681", marginTop: 4 }}>Für Script-Generierung. console.anthropic.com → API Keys</div>
                 </div>
                 <div>
-                  <label style={labelStyle}>ElevenLabs API-Key</label>
-                  <input type="password" value={elApiKey} onChange={e => setElApiKey(e.target.value)}
-                    placeholder="sk-..." style={inputStyle} />
-                  <div style={{ fontSize: 11, color: "#6e7681", marginTop: 4 }}>Für Audio-Generierung. elevenlabs.io → Profile → API Keys</div>
+                  <label style={labelStyle}>Google Cloud API-Key</label>
+                  <input type="password" value={gcpApiKey} onChange={e => setGcpApiKey(e.target.value)}
+                    placeholder="AIza..." style={inputStyle} />
+                  <div style={{ fontSize: 11, color: "#6e7681", marginTop: 4 }}>Für Audio-Generierung. console.cloud.google.com → APIs → Credentials</div>
                 </div>
                 <div>
-                  <label style={labelStyle}>Anna – Voice ID (weiblich)</label>
-                  <input value={annaVoiceId} onChange={e => setAnnaVoiceId(e.target.value)} style={inputStyle} placeholder="Voice ID" />
-                  <div style={{ fontSize: 11, color: "#6e7681", marginTop: 4 }}>Standard: Rachel (21m00Tcm4TlvDq8ikWAM)</div>
+                  <label style={labelStyle}>Anna – Voice (weiblich)</label>
+                  <input value={annaVoice} onChange={e => setAnnaVoice(e.target.value)} style={inputStyle} placeholder="de-DE-Chirp3-HD-..." />
+                  <div style={{ fontSize: 11, color: "#6e7681", marginTop: 4 }}>Standard: Chirp3-HD Aoede (weiblich, natürlich)</div>
                 </div>
                 <div>
-                  <label style={labelStyle}>Peter – Voice ID (männlich)</label>
-                  <input value={peterVoiceId} onChange={e => setPeterVoiceId(e.target.value)} style={inputStyle} placeholder="Voice ID" />
-                  <div style={{ fontSize: 11, color: "#6e7681", marginTop: 4 }}>Standard: Domi (AZnzlk1XvdvUeBnXmlld)</div>
+                  <label style={labelStyle}>Peter – Voice (männlich)</label>
+                  <input value={peterVoice} onChange={e => setPeterVoice(e.target.value)} style={inputStyle} placeholder="de-DE-Chirp3-HD-..." />
+                  <div style={{ fontSize: 11, color: "#6e7681", marginTop: 4 }}>Standard: Chirp3-HD Charon (männlich, natürlich)</div>
                 </div>
               </div>
             </div>
@@ -327,7 +584,7 @@ Anforderungen:
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
                 <div>
                   <h2 style={h2Style}>RSS-Quellen</h2>
-                  <p style={subtitleStyle}>Aktive Feeds werden wöchentlich abgerufen und zu Podcast-Episoden verarbeitet.</p>
+                  <p style={subtitleStyle}>Aktive Feeds werden abgerufen und zu Podcast-Episoden verarbeitet.</p>
                 </div>
                 <button onClick={fetchFeeds} disabled={fetchingFeeds}
                   style={{ ...btnPrimary, opacity: fetchingFeeds ? 0.7 : 1, display: "flex", alignItems: "center", gap: 8 }}>
@@ -423,21 +680,21 @@ Anforderungen:
                   <h2 style={h2Style}>Podcast-Script</h2>
                   <p style={subtitleStyle}>{script.length} Gesprächsrunden • Bereit zur Audio-Generierung</p>
                 </div>
-                <button onClick={generateAudio} disabled={generatingAudio || !script.length || !elApiKey}
+                <button onClick={generateAudio} disabled={generatingAudio || !script.length || !gcpApiKey}
                   style={{ ...btnPrimary, opacity: generatingAudio || !script.length ? 0.6 : 1, display: "flex", alignItems: "center", gap: 8 }}>
                   {generatingAudio ? <><span style={{ width: 12, height: 12, border: "2px solid #fff3", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite", display: "inline-block" }} /> Audio wird generiert…</> : "🎙 Audio generieren"}
                 </button>
               </div>
 
-              {!elApiKey && (
-                <div style={{ background: "#2d1f10", border: "1px solid #5a3a1a", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#d08020", display: "flex", gap: 8, alignItems: "center" }}>
-                  ⚠ Kein ElevenLabs API-Key. Bitte in ⚙ Einstellungen hinterlegen.
-                </div>
-              )}
-
               {!claudeApiKey && (
                 <div style={{ background: "#2d1f10", border: "1px solid #5a3a1a", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#d08020", display: "flex", gap: 8, alignItems: "center" }}>
                   ⚠ Kein Claude API-Key. Bitte in ⚙ Einstellungen hinterlegen.
+                </div>
+              )}
+
+              {!gcpApiKey && (
+                <div style={{ background: "#2d1f10", border: "1px solid #5a3a1a", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#d08020", display: "flex", gap: 8, alignItems: "center" }}>
+                  ⚠ Kein Google Cloud API-Key. Bitte in ⚙ Einstellungen hinterlegen.
                 </div>
               )}
 
@@ -483,7 +740,7 @@ Anforderungen:
           {tab === "audio" && (
             <div className="fadeIn">
               <h2 style={{ ...h2Style, marginBottom: 8 }}>Episoden</h2>
-              <p style={{ ...subtitleStyle, marginBottom: 24 }}>Generierte Podcast-Episoden zum Abspielen und Archivieren.</p>
+              <p style={{ ...subtitleStyle, marginBottom: 24 }}>Generierte Podcast-Episoden – gespeichert und auch nach Reload verfügbar.</p>
 
               {episodes.length === 0 ? (
                 <div style={{ textAlign: "center", padding: 60, color: "#6e7681" }}>
@@ -519,6 +776,36 @@ Anforderungen:
                               <span /><span /><span /><span /><span />
                             </div>
                           )}
+                          <div style={{ position: "relative" }}>
+                            <button onClick={() => setDownloadMenuEpId(downloadMenuEpId === ep.id ? null : ep.id)} title="Episode herunterladen"
+                              style={{ color: downloadMenuEpId === ep.id ? "#e8a135" : "#6e7681", fontSize: 14, padding: "6px 10px", borderRadius: 6, border: "1px solid " + (downloadMenuEpId === ep.id ? "#5a3a1a" : "transparent"), transition: "all 0.15s" }}
+                              onMouseEnter={e => { e.currentTarget.style.color = "#e8a135"; e.currentTarget.style.borderColor = "#5a3a1a"; }}
+                              onMouseLeave={e => { if (downloadMenuEpId !== ep.id) { e.currentTarget.style.color = "#6e7681"; e.currentTarget.style.borderColor = "transparent"; } }}>
+                              ⬇
+                            </button>
+                            {downloadMenuEpId === ep.id && (
+                              <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: "#161b22", border: "1px solid #30363d", borderRadius: 8, padding: 4, zIndex: 10, minWidth: 120, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+                                <button onClick={() => handleDownload(ep, "mp3")}
+                                  style={{ display: "block", width: "100%", padding: "8px 12px", fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", color: "#c9d1d9", textAlign: "left", borderRadius: 4, transition: "background 0.1s" }}
+                                  onMouseEnter={e => e.currentTarget.style.background = "#21262d"}
+                                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                                  ⬇ MP3
+                                </button>
+                                <button onClick={() => handleDownload(ep, "wav")}
+                                  style={{ display: "block", width: "100%", padding: "8px 12px", fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", color: "#c9d1d9", textAlign: "left", borderRadius: 4, transition: "background 0.1s" }}
+                                  onMouseEnter={e => e.currentTarget.style.background = "#21262d"}
+                                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                                  ⬇ WAV
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                          <button onClick={() => handleDeleteEpisode(ep.id)} title="Episode löschen"
+                            style={{ color: "#6e7681", fontSize: 14, padding: "6px 10px", borderRadius: 6, border: "1px solid transparent", transition: "all 0.15s" }}
+                            onMouseEnter={e => { e.currentTarget.style.color = "#f85149"; e.currentTarget.style.borderColor = "#5a1e26"; }}
+                            onMouseLeave={e => { e.currentTarget.style.color = "#6e7681"; e.currentTarget.style.borderColor = "transparent"; }}>
+                            🗑
+                          </button>
                         </div>
 
                         {isActive && (
@@ -527,7 +814,8 @@ Anforderungen:
                             <div style={{ background: "#21262d", borderRadius: 4, height: 4, marginBottom: 12, cursor: "pointer" }}
                               onClick={e => {
                                 const pct = e.nativeEvent.offsetX / e.currentTarget.offsetWidth;
-                                if (audioRef.current) { audioRef.current.currentTime = audioRef.current.duration * pct; }
+                                const audio = getActiveAudio();
+                                if (audio) { audio.currentTime = audio.duration * pct; }
                               }}>
                               <div style={{ width: audioProgress + "%", height: "100%", background: "#e8a135", borderRadius: 4, transition: "width 0.3s" }} />
                             </div>
@@ -575,7 +863,7 @@ Anforderungen:
         <div style={{ borderTop: "1px solid #21262d", padding: "16px 24px", marginTop: 40 }}>
           <div style={{ maxWidth: 960, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 11, color: "#6e7681", fontFamily: "'IBM Plex Mono', monospace" }}>Recht & Personal · KI-Podcast Generator</span>
-            <span style={{ fontSize: 11, color: "#6e7681", fontFamily: "'IBM Plex Mono', monospace" }}>Claude API + ElevenLabs</span>
+            <span style={{ fontSize: 11, color: "#6e7681", fontFamily: "'IBM Plex Mono', monospace" }}>Claude API + Google Cloud TTS</span>
           </div>
         </div>
       </div>

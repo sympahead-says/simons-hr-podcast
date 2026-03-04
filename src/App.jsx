@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
 const DEFAULT_FEEDS = [
-  { id: 1, name: "LTO – Legal Tribune Online", url: "https://www.lto.de/feed/", active: true, category: "Recht" },
-  { id: 2, name: "Haufe Arbeitsrecht", url: "https://www.haufe.de/arbeitsrecht/news/rss.xml", active: true, category: "Recht" },
-  { id: 3, name: "Personalwirtschaft", url: "https://www.personalwirtschaft.de/feed/", active: true, category: "HR" },
-  { id: 4, name: "HRM.de", url: "https://www.hrm.de/feed/", active: true, category: "HR" },
-  { id: 5, name: "beck-aktuell Arbeitsrecht", url: "https://rsw.beck.de/rsw/upload/beck-aktuell/rssBARL.xml", active: true, category: "Recht" },
+  { id: 1, name: "Personalwirtschaft", url: "https://www.personalwirtschaft.de/feed/", active: true, category: "HR" },
+  { id: 2, name: "HRM.de", url: "https://www.hrm.de/feed/", active: true, category: "HR" },
+  { id: 3, name: "Human Resources Manager", url: "https://www.humanresourcesmanager.de/feed/", active: true, category: "HR" },
+  { id: 4, name: "Persoblogger", url: "https://www.persoblogger.de/feed/", active: true, category: "HR" },
+  { id: 5, name: "REXX Systems HR-Blog", url: "https://www.rexx-systems.com/feed/", active: true, category: "HR" },
 ];
 
 const STEPS = ["quellen", "artikel", "script", "audio"];
@@ -21,10 +21,15 @@ export default function App() {
   const [generatingAudio, setGeneratingAudio] = useState(false);
   const [audioSegments, setAudioSegments] = useState([]);
   const [episodes, setEpisodes] = useState([]);
-  const [claudeApiKey, setClaudeApiKey] = useState("");
-  const [elApiKey, setElApiKey] = useState("");
-  const [annaVoiceId, setAnnaVoiceId] = useState("21m00Tcm4TlvDq8ikWAM");
-  const [peterVoiceId, setPeterVoiceId] = useState("AZnzlk1XvdvUeBnXmlld");
+  const [claudeApiKey, setClaudeApiKey] = useState(() => localStorage.getItem("rp_claudeApiKey") || "");
+  const [elApiKey, setElApiKey] = useState(() => localStorage.getItem("rp_elApiKey") || "");
+  const [annaVoiceId, setAnnaVoiceId] = useState(() => localStorage.getItem("rp_annaVoiceId") || "21m00Tcm4TlvDq8ikWAM");
+  const [peterVoiceId, setPeterVoiceId] = useState(() => localStorage.getItem("rp_peterVoiceId") || "AZnzlk1XvdvUeBnXmlld");
+
+  useEffect(() => { localStorage.setItem("rp_claudeApiKey", claudeApiKey); }, [claudeApiKey]);
+  useEffect(() => { localStorage.setItem("rp_elApiKey", elApiKey); }, [elApiKey]);
+  useEffect(() => { localStorage.setItem("rp_annaVoiceId", annaVoiceId); }, [annaVoiceId]);
+  useEffect(() => { localStorage.setItem("rp_peterVoiceId", peterVoiceId); }, [peterVoiceId]);
   const [status, setStatus] = useState({ msg: "", type: "idle" });
   const [audioProgress, setAudioProgress] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -47,10 +52,9 @@ export default function App() {
     const all = [];
     for (const feed of activeFeeds) {
       try {
-        const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(feed.url)}`;
-        const res = await fetch(proxy);
-        const data = await res.json();
-        const xml = new DOMParser().parseFromString(data.contents, "text/xml");
+        const res = await fetch(`/api/proxy?url=${encodeURIComponent(feed.url)}`);
+        const text = await res.text();
+        const xml = new DOMParser().parseFromString(text, "text/xml");
         const items = Array.from(xml.querySelectorAll("item")).slice(0, 6);
         items.forEach((item, i) => {
           const title = item.querySelector("title")?.textContent?.trim() || "(Kein Titel)";

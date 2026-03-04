@@ -17,19 +17,17 @@ function openDB() {
 }
 
 export async function saveEpisode(episode) {
+  // Collect blobs BEFORE opening the transaction (async fetch would expire it)
+  const segments = await Promise.all(
+    episode.segments.map(async (seg) => {
+      const resp = await fetch(seg.url);
+      const blob = await resp.blob();
+      return { speaker: seg.speaker, text: seg.text, blob };
+    })
+  );
+  const toStore = { ...episode, segments };
   const db = await openDB();
   const tx = db.transaction(STORE, "readwrite");
-  // Store raw blobs alongside segments
-  const toStore = {
-    ...episode,
-    segments: await Promise.all(
-      episode.segments.map(async (seg) => {
-        const resp = await fetch(seg.url);
-        const blob = await resp.blob();
-        return { speaker: seg.speaker, text: seg.text, blob };
-      })
-    ),
-  };
   tx.objectStore(STORE).put(toStore);
   return new Promise((resolve, reject) => {
     tx.oncomplete = resolve;

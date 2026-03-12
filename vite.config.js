@@ -33,5 +33,6 @@ function rssProxyPlugin() {
 }
 
 export default defineConfig({
+  base: '/simons-hr-podcast/',
   plugins: [react(), rssProxyPlugin()],
 })

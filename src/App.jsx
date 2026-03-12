@@ -129,7 +129,8 @@ export default function App() {
     const all = [];
     for (const feed of activeFeeds) {
       try {
-        const res = await fetch(`/api/proxy?url=${encodeURIComponent(feed.url)}`);
+        const proxyBase = import.meta.env.DEV ? '/api/proxy' : 'https://hr-podcast-rss-proxy.sympahead.workers.dev';
+        const res = await fetch(`${proxyBase}?url=${encodeURIComponent(feed.url)}`);
         const text = await res.text();
         const xml = new DOMParser().parseFromString(text, "text/xml");
         const items = Array.from(xml.querySelectorAll("item")).slice(0, 6);

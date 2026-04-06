@@ -3,7 +3,7 @@ export async function onRequestGet(context) {
   const feedUrl = url.searchParams.get("url");
 
   if (!feedUrl) {
-    return new Response(JSON.stringify({ error: "Missing url parameter" }), {
+    return new Response(JSON.stringify({ error: { message: "Missing url parameter" } }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
@@ -22,7 +22,7 @@ export async function onRequestGet(context) {
       headers: { "Content-Type": "text/xml; charset=utf-8" },
     });
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message }), {
+    return new Response(JSON.stringify({ error: { message: e.message } }), {
       status: 502,
       headers: { "Content-Type": "application/json" },
     });

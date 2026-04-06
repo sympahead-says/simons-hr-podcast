@@ -1,3 +1,0 @@
-name = "hr-podcast-rss-proxy"
-main = "index.js"
-compatibility_date = "2024-12-01"

@@ -86,13 +86,9 @@ export default function App() {
   const [generatingAudio, setGeneratingAudio] = useState(false);
   const [audioSegments, setAudioSegments] = useState([]);
   const [episodes, setEpisodes] = useState([]);
-  const [claudeApiKey, setClaudeApiKey] = useState(() => localStorage.getItem("rp_claudeApiKey") || "");
-  const [gcpApiKey, setGcpApiKey] = useState(() => localStorage.getItem("rp_gcpApiKey") || "");
   const [annaVoice, setAnnaVoice] = useState(() => localStorage.getItem("rp_annaVoice") || "de-DE-Chirp3-HD-Aoede");
   const [peterVoice, setPeterVoice] = useState(() => localStorage.getItem("rp_peterVoice") || "de-DE-Chirp3-HD-Charon");
 
-  useEffect(() => { localStorage.setItem("rp_claudeApiKey", claudeApiKey); }, [claudeApiKey]);
-  useEffect(() => { localStorage.setItem("rp_gcpApiKey", gcpApiKey); }, [gcpApiKey]);
   useEffect(() => { localStorage.setItem("rp_annaVoice", annaVoice); }, [annaVoice]);
   useEffect(() => { localStorage.setItem("rp_peterVoice", peterVoice); }, [peterVoice]);
 
@@ -129,8 +125,7 @@ export default function App() {
     const all = [];
     for (const feed of activeFeeds) {
       try {
-        const proxyBase = import.meta.env.DEV ? '/api/proxy' : 'https://hr-podcast-rss-proxy.sympahead.workers.dev';
-        const res = await fetch(`${proxyBase}?url=${encodeURIComponent(feed.url)}`);
+        const res = await fetch(`/api/rss-proxy?url=${encodeURIComponent(feed.url)}`);
         const text = await res.text();
         const xml = new DOMParser().parseFromString(text, "text/xml");
         const items = Array.from(xml.querySelectorAll("item")).slice(0, 6);
@@ -156,7 +151,6 @@ export default function App() {
   const generateScript = async () => {
     const sel = articles.filter(a => selectedIds.includes(a.id));
     if (!sel.length) { setMsg("Keine Artikel ausgewählt.", "error"); return; }
-    if (!claudeApiKey) { setMsg("Claude API-Key fehlt (⚙ Einstellungen).", "error"); return; }
     setGeneratingScript(true);
     setMsg("Script wird generiert (ca. 30 Min. Episode)…", "loading");
     const articleText = sel.map(a => `[${a.feedName} | ${a.category}]\nTitel: ${a.title}\n${a.desc}`).join("\n\n—\n\n");
@@ -197,14 +191,9 @@ UMFANG:
 - Jedes Thema ausführlich besprechen (nicht nur anreißen)`;
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/generate", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": claudeApiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 16000,
@@ -229,7 +218,6 @@ UMFANG:
 
   // — Audio Generation (Google Cloud TTS) —
   const generateAudio = async () => {
-    if (!gcpApiKey) { setMsg("Google Cloud API-Key fehlt (⚙ Einstellungen).", "error"); return; }
     if (!script.length) { setMsg("Kein Script vorhanden.", "error"); return; }
     setGeneratingAudio(true);
     const segs = [];
@@ -239,7 +227,7 @@ UMFANG:
       setMsg(`Audio: ${i + 1}/${script.length} (${turn.speaker})…`, "loading");
       const voiceName = turn.speaker === "Anna" ? annaVoice : peterVoice;
       try {
-        const r = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${gcpApiKey}`, {
+        const r = await fetch("/api/tts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -554,18 +542,6 @@ UMFANG:
               <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 18, marginBottom: 20, color: "#f0f6fc" }}>Einstellungen</h3>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
                 <div>
-                  <label style={labelStyle}>Claude API-Key</label>
-                  <input type="password" value={claudeApiKey} onChange={e => setClaudeApiKey(e.target.value)}
-                    placeholder="sk-ant-..." style={inputStyle} />
-                  <div style={{ fontSize: 11, color: "#6e7681", marginTop: 4 }}>Für Script-Generierung. console.anthropic.com → API Keys</div>
-                </div>
-                <div>
-                  <label style={labelStyle}>Google Cloud API-Key</label>
-                  <input type="password" value={gcpApiKey} onChange={e => setGcpApiKey(e.target.value)}
-                    placeholder="AIza..." style={inputStyle} />
-                  <div style={{ fontSize: 11, color: "#6e7681", marginTop: 4 }}>Für Audio-Generierung. console.cloud.google.com → APIs → Credentials</div>
-                </div>
-                <div>
                   <label style={labelStyle}>Anna – Voice (weiblich)</label>
                   <input value={annaVoice} onChange={e => setAnnaVoice(e.target.value)} style={inputStyle} placeholder="de-DE-Chirp3-HD-..." />
                   <div style={{ fontSize: 11, color: "#6e7681", marginTop: 4 }}>Standard: Chirp3-HD Aoede (weiblich, natürlich)</div>
@@ -681,23 +657,12 @@ UMFANG:
                   <h2 style={h2Style}>Podcast-Script</h2>
                   <p style={subtitleStyle}>{script.length} Gesprächsrunden • Bereit zur Audio-Generierung</p>
                 </div>
-                <button onClick={generateAudio} disabled={generatingAudio || !script.length || !gcpApiKey}
+                <button onClick={generateAudio} disabled={generatingAudio || !script.length}
                   style={{ ...btnPrimary, opacity: generatingAudio || !script.length ? 0.6 : 1, display: "flex", alignItems: "center", gap: 8 }}>
                   {generatingAudio ? <><span style={{ width: 12, height: 12, border: "2px solid #fff3", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite", display: "inline-block" }} /> Audio wird generiert…</> : "🎙 Audio generieren"}
                 </button>
               </div>
 
-              {!claudeApiKey && (
-                <div style={{ background: "#2d1f10", border: "1px solid #5a3a1a", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#d08020", display: "flex", gap: 8, alignItems: "center" }}>
-                  ⚠ Kein Claude API-Key. Bitte in ⚙ Einstellungen hinterlegen.
-                </div>
-              )}
-
-              {!gcpApiKey && (
-                <div style={{ background: "#2d1f10", border: "1px solid #5a3a1a", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#d08020", display: "flex", gap: 8, alignItems: "center" }}>
-                  ⚠ Kein Google Cloud API-Key. Bitte in ⚙ Einstellungen hinterlegen.
-                </div>
-              )}
 
               {script.length === 0 ? (
                 <div style={{ textAlign: "center", padding: 60, color: "#6e7681" }}>
